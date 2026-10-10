@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.log
+*.db
+*.db-shm
+*.db-wal
+.env
+snapshot.json
