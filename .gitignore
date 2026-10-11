@@ -7,3 +7,4 @@ __pycache__/
 .env
 snapshot.json
 tiny/dist/
+supabase.txt
