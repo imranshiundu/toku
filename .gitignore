@@ -6,3 +6,4 @@ __pycache__/
 *.db-wal
 .env
 snapshot.json
+tiny/dist/

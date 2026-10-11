@@ -116,6 +116,14 @@ def make_source(path, now=NOW):
     return path
 
 
+def expected_rows(now=NOW):
+    return [
+        (hour_floor(now - 30 * 3600), "p1", "prov/model-a", "build", 1, 50, 5, 0, 0, 0, 0.0),
+        (hour_floor(now - 7200), "global", "prov/model-b", "plan", 1, 200, 20, 0, 80, 7, 0.01),
+        (hour_floor(now - 7200), "p1", "prov/model-a", "build", 2, 160, 10, 5, 50, 0, 0.0),
+    ]
+
+
 class TokuTestCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="toku-test-")
@@ -144,13 +152,7 @@ class TokuTestCase(unittest.TestCase):
 class TestSync(TokuTestCase):
     def test_aggregates_step_finish_parts(self):
         toku.sync(self.source, self.dest, now=NOW)
-        rows = self.rows()
-        expected = [
-            (hour_floor(NOW - 30 * 3600), "p1", "prov/model-a", "build", 1, 50, 5, 0, 0, 0, 0.0),
-            (hour_floor(NOW - 7200), "global", "prov/model-b", "plan", 1, 200, 20, 0, 80, 7, 0.01),
-            (hour_floor(NOW - 7200), "p1", "prov/model-a", "build", 2, 160, 10, 5, 50, 0, 0.0),
-        ]
-        self.assertEqual(rows, expected)
+        self.assertEqual(self.rows(), expected_rows())
 
     def test_idempotent(self):
         toku.sync(self.source, self.dest, now=NOW)

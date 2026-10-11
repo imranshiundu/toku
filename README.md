@@ -5,8 +5,10 @@
 opencode stores your sessions in a local SQLite database and **prunes old data** — so your usage history quietly disappears. toku snapshots that usage into its own durable database every 2 hours via cron, so you can always answer: *what did I use in the last 24 hours, week, month, year — ever?*
 
 - **Zero dependencies** — pure Python stdlib, one file
-- **<50 MB RAM** (measured: 40.8 MB peak, and it stays flat as history grows — aggregation happens inside SQLite)
+- **<50 MB RAM** (measured: 40.8 MB peak on a 15 GB source DB; 22.3 MB on small ones — and it stays flat as history grows — aggregation happens inside SQLite)
 - **Never loses history** — upserts never shrink, so data survives opencode's pruning even if toku misses runs
+- **Tiny Go build for Raspberry Pi** — single static binary, full parity, measured 11.3 MB peak RSS
+- **Live dashboard** — `toku serve` gives you a phone-friendly web view, zero config
 - **Frontend-ready** — writes a `snapshot.json` every sync, and optionally fans out to **Supabase** (REST) or any **PostgreSQL** database
 
 ```
@@ -65,6 +67,30 @@ Check any time:
 python3 ~/.local/share/toku/toku.py report
 ```
 
+## Live dashboard (phone / any browser)
+
+```bash
+python3 ~/.local/share/toku/toku.py serve --host 0.0.0.0
+```
+
+Then open `http://<your-laptop-ip>:7480` on your phone (same WiFi) or any browser. Dark, mobile-friendly, auto-refreshes every 60 seconds, with a window selector for the model/project/agent breakdowns. It also serves `/api/snapshot` (fresh JSON, CORS-enabled) — point any frontend at it. Ctrl-C stops it; nothing is installed or left running. Keep it on `127.0.0.1` (the default) if you don't want it visible on your network.
+
+## Tiny build (Raspberry Pi, no-Python machines)
+
+`tiny/` is a complete Go port — `sync`, `report`, `snapshot.json`, Supabase push — compiled to a single static binary with no runtime dependencies:
+
+- **amd64** — any x86 Linux box
+- **arm64** — Pi Zero 2 / 3 / 4 / 5 and most ARM SBCs
+- **armv6** — original Pi Zero / Pi 1
+
+Grab one from the [releases](https://github.com/imranshiundu/toku/releases), drop it anywhere, and cron it exactly like the Python version (same database format, same config file, fully interchangeable):
+
+```
+0 */2 * * * /home/pi/toku sync
+```
+
+Measured on a small database: **11.3 MB peak RSS** (Python: 22.3 MB). On a pathological 14.8 GB source both implementations peak ~42 MB — the cost scales with the source, not with history. The Go port is verified row-identical to the Python one by a parity test that runs when both are built (`make tiny && make verify`).
+
 ## How it works
 
 toku reads opencode's own database (`~/.local/share/opencode/opencode.db`, auto-detected — never writes to it) and aggregates every `step-finish` part — **one per model call** — into hourly rows:
@@ -110,7 +136,8 @@ bash uninstall.sh --purge   # removes cron + all data
 ## Development
 
 ```bash
-make verify    # lint (py_compile, bash -n, shellcheck if present) + 12 unit tests
+make verify    # lint (py_compile, bash -n, shellcheck if present) + unit tests
+make tiny      # build the Go binaries (needs a Go toolchain) — enables the parity tests
 ```
 
 Tests build a fixture opencode database and verify aggregation, idempotency, the never-shrink guarantee, windows, labels and the RAM budget (<50 MB, asserted on Linux).

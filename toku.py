@@ -24,6 +24,7 @@ environment overrides:
 """
 
 import argparse
+import http.server
 import json
 import os
 import resource
@@ -32,7 +33,7 @@ import sys
 import time
 import urllib.request
 
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 
 WINDOWS = (
     ("24h", 24 * 3600),
@@ -570,6 +571,169 @@ def cmd_report(args):
     return 0
 
 
+DASHBOARD_HTML = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>toku — opencode usage</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; font: 15px/1.5 system-ui, sans-serif; background: #111318; color: #e6e6e6; }
+  header { padding: 18px 20px 10px; }
+  h1 { font-size: 18px; margin: 0; letter-spacing: 0.06em; }
+  #meta { color: #8a8f98; font-size: 12px; margin-top: 2px; }
+  main { padding: 0 20px 30px; }
+  table { border-collapse: collapse; width: 100%; margin: 6px 0 18px; }
+  th, td { text-align: right; padding: 6px 8px; border-bottom: 1px solid #23272f; font-variant-numeric: tabular-nums; }
+  th { color: #8a8f98; font-size: 12px; font-weight: 500; }
+  td:first-child, th:first-child { text-align: left; }
+  .bar { background: #2c66c3; height: 4px; border-radius: 2px; }
+  .barwrap { width: 90px; display: inline-block; vertical-align: middle; }
+  .barwrap .bar { width: 0%; }
+  select { background: #1b1e25; color: #e6e6e6; border: 1px solid #2c313a; border-radius: 6px; padding: 4px 8px; font-size: 13px; }
+  h2 { font-size: 13px; color: #8a8f98; font-weight: 500; margin: 18px 0 4px; }
+  .name { max-width: 46vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+</style>
+</head>
+<body>
+<header>
+  <h1>toku — opencode usage</h1>
+  <div id="meta">loading…</div>
+</header>
+<main>
+  <table id="windows"></table>
+  <h2>Breakdown <select id="win" onchange="render()">
+    <option>24h</option><option>7d</option><option>30d</option><option>365d</option><option selected>all</option>
+  </select></h2>
+  <table id="models"></table>
+  <table id="projects"></table>
+  <table id="agents"></table>
+</main>
+<script>
+const human = n => n >= 1e9 ? (n/1e9).toFixed(1)+'B' : n >= 1e6 ? (n/1e6).toFixed(1)+'M' : n >= 1e3 ? (n/1e3).toFixed(1)+'K' : String(n);
+const money = c => '$' + (c < 0.01 ? c.toFixed(4) : c.toFixed(2));
+let snap = null;
+
+function windowsTable() {
+  const order = ['24h','7d','30d','365d','all'];
+  const cols = [['requests','req'],['input_tokens','input'],['output_tokens','output'],['reasoning_tokens','reason'],['cache_read_tokens','cache-r'],['total_tokens','total'],['cost','cost']];
+  let html = '<tr><th>window</th>' + cols.map(c => '<th>'+c[1]+'</th>').join('') + '</tr>';
+  for (const name of order) {
+    const w = snap.windows[name];
+    html += '<tr><td>' + (name === 'all' ? 'all-time' : 'last ' + name) + '</td>'
+      + cols.map(c => '<td>' + (c[0] === 'cost' ? money(w[c[0]]) : human(w[c[0]])) + '</td>').join('') + '</tr>';
+  }
+  document.getElementById('windows').innerHTML = html;
+}
+
+function listTable(id, rows, total) {
+  let html = '<tr><th></th><th>req</th><th>tokens</th><th></th><th>cost</th></tr>';
+  for (const r of rows) {
+    const share = total > 0 ? (r.total_tokens / total * 100) : 0;
+    html += '<tr><td class="name" title="' + r.label.replace(/"/g,'"') + '">' + r.label
+      + '</td><td>' + human(r.requests) + '</td><td>' + human(r.total_tokens)
+      + '</td><td><span class="barwrap"><span class="bar" style="width:' + share + '%"></span></span></td>'
+      + '<td>' + money(r.cost ?? 0) + '</td></tr>';
+  }
+  document.getElementById(id).innerHTML = html || '<tr><td>(no data)</td></tr>';
+}
+
+function render() {
+  if (!snap) return;
+  document.getElementById('meta').textContent = 'generated ' + new Date(snap.generated_at * 1000).toLocaleString() + ' — auto-refreshes every 60s';
+  windowsTable();
+  const w = snap.windows[document.getElementById('win').value];
+  listTable('models', w.by_model.slice(0, 10), w.total_tokens);
+  listTable('projects', w.by_project.slice(0, 10), w.total_tokens);
+  listTable('agents', w.by_agent.slice(0, 10), w.total_tokens);
+}
+
+async function load() {
+  try {
+    const r = await fetch('/api/snapshot');
+    snap = await r.json();
+    render();
+  } catch (e) {
+    document.getElementById('meta').textContent = 'fetch failed: ' + e;
+  }
+}
+load();
+setInterval(load, 60000);
+</script>
+</body>
+</html>
+"""
+
+
+def make_dashboard_server(host, port):
+    dest = toku_db_path()
+    snapshot_file = snapshot_path()
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def respond(self, body, content_type, cors=False):
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            if cors:
+                self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            if self.path in ("/", "/index.html"):
+                self.respond(DASHBOARD_HTML.encode(), "text/html; charset=utf-8")
+            elif self.path == "/api/snapshot":
+                if os.path.exists(snapshot_file):
+                    with open(snapshot_file, "rb") as fh:
+                        self.respond(fh.read(), "application/json", cors=True)
+                else:
+                    conn = sqlite3.connect(dest)
+                    try:
+                        snap = build_snapshot(conn)
+                    finally:
+                        conn.close()
+                    self.respond(
+                        json.dumps(snap).encode(), "application/json", cors=True
+                    )
+            else:
+                self.send_error(404)
+
+        def log_message(self, *log_args):
+            pass
+
+    server = http.server.ThreadingHTTPServer((host, port), Handler)
+    server.daemon_threads = True
+    return server
+
+
+def cmd_serve(args):
+    dest = toku_db_path()
+    if not os.path.exists(dest):
+        print("toku: no data yet — run 'python3 toku.py sync' first")
+        return 1
+    server = make_dashboard_server(args.host, args.port)
+    urls = ["http://127.0.0.1:%d/" % server.server_address[1]]
+    if args.host == "0.0.0.0":
+        try:
+            s = __import__("socket")
+            probe = s.socket(s.AF_INET, s.SOCK_DGRAM)
+            probe.connect(("8.8.8.8", 80))
+            lan_ip = probe.getsockname()[0]
+            probe.close()
+            urls.append("http://%s:%d/  <- open this on your phone" % (lan_ip, server.server_address[1]))
+        except OSError:
+            pass
+    print("toku serve — usage dashboard. Ctrl-C to stop.")
+    for u in urls:
+        print("  " + u)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\ntoku serve stopped")
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="toku", description="persistent usage tracking for opencode"
@@ -578,10 +742,15 @@ def main(argv=None):
     sub = parser.add_subparsers(dest="command", required=True)
     p_sync = sub.add_parser("sync", help="aggregate usage + write snapshot (+ optional remote push)")
     p_sync.add_argument("--source", help="path to the opencode database (default: auto-detect)")
+    p_serve = sub.add_parser("serve", help="serve the usage dashboard + /api/snapshot over HTTP")
+    p_serve.add_argument("--host", default="127.0.0.1", help="bind address (use 0.0.0.0 for LAN/phone access)")
+    p_serve.add_argument("--port", type=int, default=7480, help="port to listen on (default: 7480)")
     sub.add_parser("report", help="print usage windows (24h / 7d / 30d / 365d / all-time)")
     args = parser.parse_args(argv)
     if args.command == "sync":
         return cmd_sync(args)
+    if args.command == "serve":
+        return cmd_serve(args)
     return cmd_report(args)
 
 

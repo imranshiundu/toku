@@ -2,6 +2,8 @@
 
 toku is a persistent usage tracker for opencode: it snapshots token/model/agent/project usage from opencode's local SQLite database into its own durable database every 2 hours via cron, because opencode prunes old data and history disappears.
 
+**Hard rule: never modify the user's desktop environment.** No shell extensions, no theme changes, no WM restarts, no gsettings edits. toku runs as a plain cron job and CLI — that boundary is deliberate. (A GNOME top-bar extension was attempted once, the owner's shell misbehaved during removal of an unrelated handover, and the owner ended the experiment. Don't repeat it.)
+
 ## When asked to install toku on a user's machine
 
 1. Clone or download this repo, then run `bash install.sh` from the repo root (or the one-liner in README).
@@ -11,7 +13,8 @@ toku is a persistent usage tracker for opencode: it snapshots token/model/agent/
 
 ## When changing code
 
-- `toku.py` is the whole backend: stdlib only — do not add runtime dependencies (the 50 MB RAM budget and zero-install promise depend on it).
+- `toku.py` is the main backend: stdlib only — do not add runtime dependencies (the 50 MB RAM budget and zero-install promise depend on it).
+- `tiny/main.go` is a full Go port (sync/report/snapshot/Supabase) for no-Python machines and tiny ARM boards. It MUST stay behaviorally identical to `toku.py` — `tests/test_tiny.py` enforces row-level parity; build with `make tiny` (needs a Go toolchain) so the parity tests run.
 - Verification: `make verify` (or `python3 -m unittest discover -s tests`). All tests must pass; no suppressed failures.
 - Never break the never-shrink guarantee in the upsert: local history must survive source pruning. There are tests for this — keep them passing.
 - Update `CHANGELOG.md` and burn items from `DEBT_LEDGER.md` in the same change that resolves them.
